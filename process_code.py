@@ -83,30 +83,19 @@ def select_group(gen_details_dd, state=None, ftype=None):
 # ----------------------
 # Processing
 # ----------------------
-
-import time
-import os
-import pandas as pd
-import numpy as np
-import dask.dataframe as dd
-
 def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end_date, mode="daily"):
     timings = {}
     print("--- Starting Dask-Native Process ---")
     
-    # 1. Get safe DUIDs from the computed pandas DataFrame
+    # ... (Steps 1-6 are unchanged)
+    # 1. Get safe DUIDs
     t0 = time.time()
     safe_duids = set(duid.replace("/", "_").replace("\\", "_") for duid in grp_pd['DUID'])
     timings['duid_setup'] = time.time() - t0
 
-    # 2. Bulk Dask read_csv
+    # 2. Read generation data
     t0 = time.time()
-    dfs = dd.read_csv(
-        f"{gen_fpath}/*.csv",
-        dtype={'DUID': 'string'},
-        assume_missing=True,
-        blocksize="256MB"
-    )
+    dfs = dd.read_csv(f"{gen_fpath}/*.csv", dtype={'DUID': 'string'}, assume_missing=True, blocksize="256MB")
     timings['csv_bulk_read'] = time.time() - t0
 
     # 3. Filter DUIDs
@@ -115,7 +104,7 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
     dfs = dfs[dfs['DUID'] != 'DUID']
     timings['filter_and_clean'] = time.time() - t0
 
-    # 4. Type conversions and dropping nulls
+    # 4. Type conversions
     t0 = time.time()
     dfs['time'] = dd.to_datetime(dfs['time'], errors='coerce')
     dfs['TOTALCLEARED'] = dd.to_numeric(dfs['TOTALCLEARED'], errors='coerce')
@@ -124,38 +113,45 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
     dfs = dfs.dropna(subset=['time', 'DUID'])
     timings['type_conversion_and_dropna'] = time.time() - t0
     
-    # 5. Filter by date, then set and sort the index
+    # 5. Filter by date
     t0 = time.time()
     dfs = dfs[(dfs['time'] >= start_date) & (dfs['time'] <= end_date)]
-    print("Setting index and sorting data by time... (This may take a while)")
-    dfs = dfs.set_index('time')
-    timings['date_filter_and_sort'] = time.time() - t0
+    timings['date_filter'] = time.time() - t0
 
     # 6. Prepare heatwave time series
     t0 = time.time()
     hw_tseries_dd['time'] = dd.to_datetime(hw_tseries_dd['time']).dt.normalize()
-    hw_tseries_dd = hw_tseries_dd.set_index('time').loc[start_date:end_date]
+    hw_tseries_dd = hw_tseries_dd.set_index('time').loc[start_date:end_date].reset_index()
     timings['hw_tseries_filter'] = time.time() - t0
 
     # 7. Aggregation/groupby
     t0 = time.time()
+    # --- DEFINITIVE FIX: Merge hourly data first, then aggregate to daily ---
+    # Create a normalized date column on both dataframes for the merge
+    dfs['date'] = dfs['time'].dt.normalize()
+    hw_tseries_dd = hw_tseries_dd.rename(columns={'time': 'date'})
+
+    # Merge the raw hourly generation data with the daily heatwave data
+    # Use a left merge to keep all generation records and add heatwave flags
+    merged = dd.merge(dfs, hw_tseries_dd, on=['DUID', 'date'], how='left')
+    
     if mode == 'hourly':
-        dfs_hourly = dfs.reset_index()
-        hw_daily_dd = hw_tseries_dd.reset_index()
-        hw_daily_dd['date'] = hw_daily_dd['time'].dt.normalize()
-        dfs_hourly['date'] = dfs_hourly['time'].dt.normalize()
-        merged = dd.merge(
-            dfs_hourly, hw_daily_dd.drop(columns='time'), on=['DUID', 'date'], how='left'
-        ).drop(columns='date')
+        # Drop the temporary 'date' column for hourly mode
+        merged = merged.drop(columns='date')
         timings['aggregate_hourly'] = time.time() - t0
     else: # daily mode
-        agg_func = {'TOTALMWh': 'sum', 'TOTALCLEARED': 'sum', 'AGCSTATUS': 'max'}
-        dfs_daily = dfs.groupby(['DUID', dd.Grouper(freq='1D')]).agg(agg_func).reset_index()
-        hw_daily_dd = hw_tseries_dd.reset_index()
-        dfs_daily['time'] = dd.to_datetime(dfs_daily['time']).dt.normalize()
-        hw_daily_dd['time'] = dd.to_datetime(hw_daily_dd['time']).dt.normalize()
-        merged = dd.merge(dfs_daily, hw_daily_dd, on=['DUID', 'time'], how='left')
+        # For daily mode, now we aggregate the combined data.
+        # This ensures each day is a single row.
+        agg_func = {
+            'TOTALMWh': 'sum', 
+            'TOTALCLEARED': 'sum', 
+            'AGCSTATUS': 'max',
+            'EHF_flag': 'max'  # Take the max EHF_flag for the day
+        }
+        merged = merged.groupby(['DUID', 'date']).agg(agg_func).reset_index()
+        merged = merged.rename(columns={'date': 'time'})
         timings['aggregate_daily'] = time.time() - t0
+    # -----------------------------------------------------------------------
 
     # 8. Drop all-NA rows
     merged = merged.dropna(how='all')
@@ -173,6 +169,7 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
     # 10. Final merge with generator details
     t0 = time.time()
     grp_pd_jittered_dd = dd.from_pandas(grp_pd_jittered, npartitions=1)
+    # The 'how' must be 'left' to avoid creating duplicates from the jittered frame
     merged = merged.merge(
         grp_pd_jittered_dd[['DUID', 'fuel_source_primary', 'region', 'lat_jittered', 'lon_jittered']],
         on='DUID',
@@ -192,8 +189,8 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
         print(f"{k}: {v:.2f} seconds")
     print("--- END REPORT ---\n")
     
-    # --- FIX: Restore the return statement ---
     return df_computed.reset_index(drop=True), grp_pd_jittered.reset_index(drop=True)
+
 
 # ----------------------
 # Filters (pandas)
@@ -202,14 +199,42 @@ def sel_months(df, months=[12,1,2]):
     return df[df['time'].dt.month.isin(months)]
 
 def min_heatwave_days(df, min_days=20):
-    df = df.copy()
-    df['date'] = pd.to_datetime(df['time']).dt.normalize()
-    heatwave_days = (
-        df[df['EHF_flag'] == 1]
-        .groupby('DUID')['date']
-        .nunique()
-    )
+    # --- FINAL, CORRECTED IMPLEMENTATION ---
+    if 'EHF_flag' not in df.columns or df['EHF_flag'].sum() == 0:
+        print("WARNING: 'EHF_flag' column not found or contains no heatwave events. Skipping 'min_heatwave_days' filter.")
+        return df
+
+    # Create a temporary DataFrame containing only the rows with heatwave events.
+    heatwave_df = df[df['EHF_flag'] == 1].copy()
+    
+    # Add a normalized date column for counting unique days.
+    heatwave_df['date'] = pd.to_datetime(heatwave_df['time']).dt.normalize()
+    
+    # This is a robust way to count unique days per DUID.
+    # It groups by DUID, then counts the number of unique 'date' entries in each group.
+    heatwave_days = heatwave_df.groupby('DUID')['date'].nunique()
+
+        # --- NEW: Print the calculated heatwave days for each DUID ---
+    print("\n--- DEBUG: Calculated Heatwave Days per Generator ---")
+    with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # Ensure all rows are printed
+        print(heatwave_days.sort_values(ascending=False))
+    print("--- END DEBUG ---\n")
+    # -------------------------------------------------------------
+    
+    
+    # Get the DUIDs that meet the threshold.
     valid_duids = heatwave_days[heatwave_days >= min_days].index
+    
+    if valid_duids.empty:
+        print(f"WARNING: No generators met the minimum of {min_days} heatwave days.")
+        print("         The 'min_heatwave_days' filter will result in an empty DataFrame.")
+        # We return an empty frame here because the user explicitly asked for this filter.
+        # If no generators pass, the correct result is an empty DataFrame.
+        return df[df['DUID'].isin(valid_duids)].copy()
+    
+    print(f"INFO: Applying 'min_heatwave_days' filter. Keeping {len(valid_duids)} of {df['DUID'].nunique()} generators.")
+    
+    # Filter the original DataFrame and return it with its structure unchanged.
     return df[df['DUID'].isin(valid_duids)].copy()
 
 def remove_negatives(df):
@@ -231,18 +256,27 @@ def remove_solar_night(df):
 
 def remove_wind_zeros(df, threshold=40):
     wind_df = df[df['fuel_source_primary'] == 'Wind']
+    non_wind_df = df[df['fuel_source_primary'] != 'Wind']
+
+    if wind_df.empty:
+        return df
+
     percent_zeros = (
         wind_df.groupby('DUID')['TOTALMWh']
                .apply(lambda x: (x == 0).sum() / len(x) * 100)
     )
+    
     keep_duids = percent_zeros[percent_zeros <= threshold].index
+    
+    if keep_duids.empty and non_wind_df.empty:
+        print(f"WARNING: All wind generators exceeded the zero-MWh threshold of {threshold}%.")
+        print("         The 'remove_wind_zeros' filter would result in an empty DataFrame. Skipping filter.")
+        return df
+
     wind_filtered = wind_df[wind_df['DUID'].isin(keep_duids)]
-    non_wind_df = df[df['fuel_source_primary'] != 'Wind']
     return pd.concat([non_wind_df, wind_filtered], ignore_index=True)
 
 def clear_agc(df):
-    # Removes days where AGCSTATUS is 0 and the plant is non-operational.
-    # Generally ill-advised
     df = df[~((df['TOTALMWh'] < 0))].copy()
     mask = (df['fuel_source_primary'].isin([
             'Water', 'Natural Gas Pipeline', 'Black Coal', 'Coal Seam Methane',
@@ -280,9 +314,6 @@ def load_generation_data(
     }
     gen_details_dd = dd.read_csv(GEN_INFO_FP, dtype=gen_details_dtype)
     
-    # --- FIX: Specify dtype directly in read_csv for hw_tseries ---
-    # This prevents the subtle type mismatch warning by ensuring the
-    # dtype is consistent from the moment the file is read.
     hw_tseries_dd = dd.read_csv(HW_FP, dtype={'DUID': 'string'})
     
     print(f"Read gen_details & hw_tseries with Dask: {time.time()-t0:.2f} sec")
@@ -310,4 +341,15 @@ def load_generation_data(
     if apply_clear_agc:
         df = clear_agc(df)
     print(f"Filters: {time.time()-t3:.2f} sec")
+
+    # --- NEW FIX: Synchronize the 'grp' DataFrame with the final 'df' ---
+    # This ensures the generator info exactly matches the final, filtered data.
+    if not df.empty:
+        final_duids = df['DUID'].unique()
+        grp = grp[grp['DUID'].isin(final_duids)].copy()
+    else:
+        # If df is empty, grp should also be empty.
+        grp = grp.iloc[0:0].copy()
+    # --------------------------------------------------------------------
+
     return df, grp
