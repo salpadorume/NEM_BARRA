@@ -86,8 +86,7 @@ def select_group(gen_details_dd, state=None, ftype=None):
 def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end_date, mode="daily"):
     timings = {}
     print("--- Starting Dask-Native Process ---")
-    
-    # ... (Steps 1-6 are unchanged)
+
     # 1. Get safe DUIDs
     t0 = time.time()
     safe_duids = set(duid.replace("/", "_").replace("\\", "_") for duid in grp_pd['DUID'])
@@ -106,13 +105,13 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
 
     # 4. Type conversions
     t0 = time.time()
-    dfs['time'] = dd.to_datetime(dfs['time'], errors='coerce')
+    dfs['time'] = dd.to_datetime(dfs['time'], errors='coerce', utc=True)
     dfs['TOTALCLEARED'] = dd.to_numeric(dfs['TOTALCLEARED'], errors='coerce')
     dfs['TOTALMWh'] = dd.to_numeric(dfs['TOTALMWh'], errors='coerce')
     dfs['AGCSTATUS'] = dd.to_numeric(dfs['AGCSTATUS'], errors='coerce').fillna(0).astype(int)
     dfs = dfs.dropna(subset=['time', 'DUID'])
     timings['type_conversion_and_dropna'] = time.time() - t0
-    
+
     # 5. Filter by date
     t0 = time.time()
     dfs = dfs[(dfs['time'] >= start_date) & (dfs['time'] <= end_date)]
@@ -120,42 +119,50 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
 
     # 6. Prepare heatwave time series
     t0 = time.time()
-    hw_tseries_dd['time'] = dd.to_datetime(hw_tseries_dd['time']).dt.normalize()
+    hw_tseries_dd['time'] = dd.to_datetime(hw_tseries_dd['time'], errors='coerce', utc=True)
+    hw_tseries_dd['time'] = hw_tseries_dd['time'].dt.normalize()  # daily flag
     hw_tseries_dd = hw_tseries_dd.set_index('time').loc[start_date:end_date].reset_index()
     timings['hw_tseries_filter'] = time.time() - t0
 
-    # 7. Aggregation/groupby
+    # 7. Merge and aggregate
     t0 = time.time()
-    # --- DEFINITIVE FIX: Merge hourly data first, then aggregate to daily ---
-    # Create a normalized date column on both dataframes for the merge
-    dfs['date'] = dfs['time'].dt.normalize()
-    hw_tseries_dd = hw_tseries_dd.rename(columns={'time': 'date'})
-
-    # Merge the raw hourly generation data with the daily heatwave data
-    # Use a left merge to keep all generation records and add heatwave flags
-    merged = dd.merge(dfs, hw_tseries_dd, on=['DUID', 'date'], how='left')
-    
     if mode == 'hourly':
-        # Drop the temporary 'date' column for hourly mode
-        merged = merged.drop(columns='date')
+        dfs['merge_day'] = dfs['time'].dt.normalize()
+        hw_tseries_dd['merge_day'] = hw_tseries_dd['time']
+        merged = dd.merge(
+            dfs,
+            hw_tseries_dd,
+            on=['DUID', 'merge_day'],
+            how='left'
+        )
+        merged = merged.drop(columns=['merge_day'])
+        # Fix: Ensure 'time' is present
+        if 'time_x' in merged.columns:
+            merged = merged.rename(columns={'time_x': 'time'})
+        if 'time_y' in merged.columns:
+            merged = merged.drop(columns=['time_y'])
         timings['aggregate_hourly'] = time.time() - t0
-    else: # daily mode
-        # For daily mode, now we aggregate the combined data.
-        # This ensures each day is a single row.
+    else:  # daily mode
+        # For daily, aggregate and merge on normalized time
+        dfs['time'] = dfs['time'].dt.normalize()
+        merged = dd.merge(
+            dfs,
+            hw_tseries_dd,
+            on=['DUID', 'time'],
+            how='left'
+        )
         agg_func = {
-            'TOTALMWh': 'sum', 
-            'TOTALCLEARED': 'sum', 
+            'TOTALMWh': 'sum',
+            'TOTALCLEARED': 'sum',
             'AGCSTATUS': 'max',
-            'EHF_flag': 'max'  # Take the max EHF_flag for the day
+            'EHF_flag': 'max'
         }
-        merged = merged.groupby(['DUID', 'date']).agg(agg_func).reset_index()
-        merged = merged.rename(columns={'date': 'time'})
+        merged = merged.groupby(['DUID', 'time']).agg(agg_func).reset_index()
         timings['aggregate_daily'] = time.time() - t0
-    # -----------------------------------------------------------------------
 
     # 8. Drop all-NA rows
     merged = merged.dropna(how='all')
-    
+
     # 9. Jitter for plotting
     t0 = time.time()
     grp_pd_jittered = grp_pd.groupby(['lat', 'lon'], group_keys=False).apply(
@@ -169,7 +176,6 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
     # 10. Final merge with generator details
     t0 = time.time()
     grp_pd_jittered_dd = dd.from_pandas(grp_pd_jittered, npartitions=1)
-    # The 'how' must be 'left' to avoid creating duplicates from the jittered frame
     merged = merged.merge(
         grp_pd_jittered_dd[['DUID', 'fuel_source_primary', 'region', 'lat_jittered', 'lon_jittered']],
         on='DUID',
@@ -183,14 +189,13 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
     df_computed = merged.compute()
     timings['compute'] = time.time() - t0
     print("Dask compute finished.")
-    
+
     print("\n--- DASK TIMING REPORT ---")
     for k, v in timings.items():
         print(f"{k}: {v:.2f} seconds")
     print("--- END REPORT ---\n")
-    
-    return df_computed.reset_index(drop=True), grp_pd_jittered.reset_index(drop=True)
 
+    return df_computed.reset_index(drop=True), grp_pd_jittered.reset_index(drop=True)
 
 # ----------------------
 # Filters (pandas)
@@ -270,7 +275,7 @@ def remove_wind_zeros(df, threshold=40):
     
     if keep_duids.empty and non_wind_df.empty:
         print(f"WARNING: All wind generators exceeded the zero-MWh threshold of {threshold}%.")
-        print("         The 'remove_wind_zeros' filter would result in an empty DataFrame. Skipping filter.")
+        print("The 'remove_wind_zeros' filter would result in an empty DataFrame. Skipping filter.")
         return df
 
     wind_filtered = wind_df[wind_df['DUID'].isin(keep_duids)]
@@ -303,7 +308,10 @@ def load_generation_data(
     apply_min_heatwave_days=False,
     min_heatwave_days_threshold=20,
     apply_clear_agc=False
-):
+    ):
+    
+    sdate = pd.to_datetime(sdate, utc=True)
+    edate = pd.to_datetime(edate, utc=True)
     t0 = time.time()
     
     gen_details_dtype = {
@@ -315,6 +323,8 @@ def load_generation_data(
     gen_details_dd = dd.read_csv(GEN_INFO_FP, dtype=gen_details_dtype)
     
     hw_tseries_dd = dd.read_csv(HW_FP, dtype={'DUID': 'string'})
+    hw_tseries_dd['time'] = dd.to_datetime(hw_tseries_dd['time'], utc=True)
+    hw_tseries_dd['date'] = hw_tseries_dd['time'].dt.normalize()
     
     print(f"Read gen_details & hw_tseries with Dask: {time.time()-t0:.2f} sec")
 
@@ -342,8 +352,6 @@ def load_generation_data(
         df = clear_agc(df)
     print(f"Filters: {time.time()-t3:.2f} sec")
 
-    # --- NEW FIX: Synchronize the 'grp' DataFrame with the final 'df' ---
-    # This ensures the generator info exactly matches the final, filtered data.
     if not df.empty:
         final_duids = df['DUID'].unique()
         grp = grp[grp['DUID'].isin(final_duids)].copy()
