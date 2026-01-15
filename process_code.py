@@ -11,8 +11,8 @@ import logging
 # Constants for filepaths
 # ----------------------
 GEN_INFO_FP = "/g/data/ng72/ms5578/ID_HW_BARRA/data/preprocess/gen_info.csv"
-HW_FP = "/scratch/ng72/ms5578/gen_hw_status.csv"
-GEN_FPATH = "/scratch/ng72/ms5578/generation_time_series"
+HW_FP = "/scratch/ng72/ms5578/time_series/gen_hw_status.csv"
+GEN_FPATH = "/scratch/ng72/ms5578/time_series/nem_generation"
 
 # ----------------------
 # Dask client singleton (auto-starts on import)
@@ -94,7 +94,7 @@ def process_group_dask(grp_pd, grp_dd, gen_fpath, hw_tseries_dd, start_date, end
 
     # 2. Read generation data
     t0 = time.time()
-    dfs =  dd.read_csv( f"{gen_fpath}/*.csv", dtype={ 'DUID': 'object', 'AGCSTATUS': 'object', 'TOTALCLEARED': 'object', 'TOTALMWh': 'object', }, assume_missing=True, blocksize="256MB", na_values=["", "NA", "NaN"] )
+    dfs = dd.read_csv(f"{gen_fpath}/*.csv", dtype={'DUID': 'string'}, assume_missing=True, blocksize="256MB")
     timings['csv_bulk_read'] = time.time() - t0
 
     # 3. Filter DUIDs
@@ -315,7 +315,7 @@ def load_generation_data(
     t0 = time.time()
     
     gen_details_dtype = {
-        'DUID': 'object',
+        'DUID': 'string',
         'max_cap_mw': 'object',
         'reg_cap_mw': 'object',
         'reg_cap_mw_nmap': 'object'
