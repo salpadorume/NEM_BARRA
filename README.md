@@ -1,12 +1,8 @@
 # NEM_BARRA
 
-This repository is designed to be run form my NCI account, which contains downloaded MMSDM data prior to the 2025/2026 updates.  
-It also contains downloaded and synthesised Generation Information files, downloaded NationalMap data, shapefiles, etc.  
-This repository is intended for verification of thesis results and will NOT work out-of-the-box.  
+This repository is designed to be run form my NCI account, which contains downloaded MMSDM data prior to the 2025/2026 updates. It also contains downloaded and synthesised Generation Information files, downloaded NationalMap data, shapefiles, etc. This repository is intended for verification of thesis results and will NOT work out-of-the-box.
 
-This code requires a data folder at the top level for basic functions.  
-Plotting code may be further organised into subfolders and may not work outside of the specified environment.  
-A diagram of the base structure is shown below.  
+This code requires a data folder at the top level for basic functions. Plotting code may be further organised into subfolders and may not work outside of the specified environment. A diagram of the base structure is shown below.  
 
 ```text
 data/
@@ -21,14 +17,11 @@ data/
 STAGE 1: RETRIEVE NEM DATA.
 ---------------------------
 
-The MMSDM DISPATCHLOAD tables were downloaded from https://www.nemweb.com.au/Data_Archive/Wholesale_Electricity/MMSDM/ (retrieved November 2025, prior to the Data Model redesign in December).  
-Location: saved to my folder in project ng72 on Gadi.  
+The MMSDM DISPATCHLOAD tables were downloaded from https://www.nemweb.com.au/Data_Archive/Wholesale_Electricity/MMSDM/ (retrieved November 2025, prior to the Data Model redesign in December). Location: saved to my folder in project ng72 on Gadi.  
 
-Generator details were retrieved from the NEM Generation Information spreadsheets from June 2019 to July 2024.  
-Generation Information prior to June 2019 did not contain Dispatchable Unit Identifiers (DUID), which are needed to identify generators in the dispatch tables.  
-The generator details were concatenated and the most recent entry for each DUID was selected, this may mean that details such as regular and maximum capacity may not apply to all periods of generation.  
+Generator details were retrieved from the NEM Generation Information spreadsheets from June 2019 to July 2024. Generation Information prior to June 2019 did not contain Dispatchable Unit Identifiers (DUID), which are needed to identify generators in the dispatch tables. The generator details were concatenated and the most recent entry for each DUID was selected, this may mean that details such as regular and maximum capacity may not apply to all periods of generation.  
 Link: https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/generation-information (retrieved July 2024).  
-Location: ID_HW_BARRA/data/raw/gen_info.csv  
+Location: ID_HW_BARRA/data/raw/gen_info.csv
 
 Some generator locations were retrieved from NationalMap (accessed June 2025, now retired).  
 Location: ID_HW_BARRA/data/raw/nmap.csv  
