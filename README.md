@@ -34,7 +34,7 @@ Writes: "ID_HW_BARRA/data/preprocess/t95_baseline.nc"
 Compute: xxlarge (28CPU, 126GB)
 Environment: analysis3
 
-SCRIPT 3: calcehf.ipynb
+SCRIPT 3: calcehf_v2.ipynb
 - Calculates daily EHF for land cells in BARRA-R2.
 - D'Argueso's EHF code using Nairn and Fawcett (2014) definition of EHF.
 - Parrallelized using Dask and Xarray.
@@ -56,4 +56,28 @@ Writes: '/ID_HW_BARRA/data/preprocess/gen_info.csv'
 Environment: custom (also requires API setup)
 Compute: medium
 
-SCRIPT 2: 
+SCRIPT 2: process_MMSDM.ipynb
+- Re-formats the MMSDM dispatch tables from sequential settlement files into per-DUID time series CSVs.
+- Cleans, groups, and writes one output file per generator so the generation data can be handled efficiently in downstream notebooks.
+Reads: "/g/data/ng72/ms5578/mmsdm_dispatch_data/"
+Writes: "/scratch/ng72/ms5578/generation_time_series/"
+Environment: analysis3
+Compute: large
+
+SCRIPT 3: create_tseries.ipynb
+- Combines the generator metadata, heatwave flags, and processed generation time series into the final generator/heatwave status table.
+- Converts timestamps to Australia/Brisbane time, filters by generator group, and adds heatwave-day counts for analysis.
+Reads: "ID_HW_BARRA/data/preprocess/gen_info.csv", "/scratch/ng72/ms5578/ehf_netcdf/", "/scratch/ng72/ms5578/generation_time_series/"
+Writes: "/scratch/ng72/ms5578/gen_hw_status.csv"
+Environment: analysis3
+Compute: xlarge
+
+
+UTILITY FILES
+-------------
+
+process_code.py
+- Shared Dask-based helper functions for filtering generators, joining heatwave flags to generation time series, and applying common post-processing filters.
+
+Constants.py
+- Small module of atmospheric constants used by the heatwave and meteorological calculations. From Argueso notebook.
