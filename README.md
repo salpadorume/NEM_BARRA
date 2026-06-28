@@ -1,5 +1,19 @@
 # NEM_BARRA
 
+This repository is designed to be run form my NCI account, which contains downloaded MMSDM data prior to the 2025/2026 updates. It also contains downloaded and synthesised Generation Information files, downloaded NationalMap data, shapefiles, etc. This repository is intended for verification of thesis results and will NOT work out-of-the-box.
+
+This code requires a data folder at the top level for basic functions. Plotting code may be further organised into subfolders and may not work outside of the specified environment. A diagram of the base structure is shown below.
+
+```text
+data/
+|-- raw/
+|   `-- Downloaded source files
+|-- preprocess/
+|   `-- Cleaned and derived inputs
+`-- output/
+    `-- Figures, tables, and exported results
+```
+
 STAGE 1: RETRIEVE NEM DATA.
 ---------------------------
 
@@ -20,7 +34,6 @@ STAGE 2: IDENTIFY HEATWAVES IN BARRA-R2
 SCRIPT 1: calc_ls_mask.ipynb
 - Reads the sftlf (land_area_fraction) from AUS-11 (BARRA-R2) in project ob53.
 - Masks land fraction <= 0.75 and saves as NetCDF.
-
 Reads: "/g/data/ob53/BARRA2/output/reanalysis/AUS-11/BOM/ERA5/historical/hres/BARRA-R2/v1/fx/sftlf/latest/sftlf_AUS-11_ERA5_historical_hres_BOM_BARRA-R2_v1.nc"
 Writes: "ID_HW_BARRA/data/preprocess/land_sea_mask.nc"
 Compute: Medium (4CPU, 18GB) should be fine as the file is small.
@@ -28,7 +41,6 @@ Environment: analysis3
 
 SCRIPT 2: calc95pct.ipynb
 - Calculates mean daily temperature (tas) climatology for 1979-2000 using AUS-11 (BARRA-R2).
-
 Reads: "/g/data/ob53/BARRA2/output/reanalysis/AUS-11/BOM/ERA5/historical/hres/BARRA-R2/v1/day/tas/latest/"
 Writes: "ID_HW_BARRA/data/preprocess/t95_baseline.nc"
 Compute: xxlarge (28CPU, 126GB)
@@ -38,7 +50,6 @@ SCRIPT 3: calcehf_v2.ipynb
 - Calculates daily EHF for land cells in BARRA-R2.
 - D'Argueso's EHF code using Nairn and Fawcett (2014) definition of EHF.
 - Parrallelized using Dask and Xarray.
-
 Reads: "/g/data/ob53/BARRA2/output/reanalysis/AUS-11/BOM/ERA5/historical/hres/BARRA-R2/v1/day/tas/latest/"
 Writes: '/scratch/ng72/ms5578/ehf_netcdf/'
 Environment: analysis3
@@ -80,4 +91,4 @@ process_code.py
 - Shared Dask-based helper functions for filtering generators, joining heatwave flags to generation time series, and applying common post-processing filters.
 
 Constants.py
-- Small module of atmospheric constants used by the heatwave and meteorological calculations. From Argueso notebook.
+- Small module of atmospheric constants used by the heatwave and meteorological calculations. From D'Argueso code.
