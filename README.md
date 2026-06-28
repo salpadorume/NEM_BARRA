@@ -93,5 +93,4 @@ Constants.py
 
 ANALYSIS
 --------
-After running the previous 3 stages, you are now able to run scripts in analysis/wind_chapter, THEN analysis/alpine_wind.  
-See folder README.mds for more details.  
+After running the previous 3 stages, you are now able to run scripts in analysis/wind_chapter, THEN analysis/alpine_wind. See folder README.mds for more details.  
